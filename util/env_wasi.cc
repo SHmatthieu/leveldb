@@ -1,14 +1,17 @@
-// Copyright (c) 2011 The LevelDB Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file. See the AUTHORS file for names of contributors.
+// my include
+#include <mutex>
+#include <pthread.h>
+// custom define to avoid redefinition
+#define __DEFINED_pthread_t
+#define __DEFINED_pthread_cond_t
+#define __DEFINED_pthread_mutex_t
 
 #include <dirent.h>
 #include <fcntl.h>
-#include <sys/mman.h>
+//#include <sys/mman.h>
 #ifndef __Fuchsia__
-#include <sys/resource.h>
+//#include <sys/resource.h>
 #endif
-#include <atomic>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -22,9 +25,9 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
-#include <thread>
-#include <type_traits>
 #include <unistd.h>
+//#include <thread>
+#include <type_traits>
 #include <utility>
 
 #include "leveldb/env.h"
@@ -33,8 +36,8 @@
 
 #include "port/port.h"
 #include "port/thread_annotations.h"
-#include "util/env_posix_test_helper.h"
-#include "util/posix_logger.h"
+#include "util/env_wasi_test_helper.h"
+#include "util/wasi_logger.h"
 
 namespace leveldb {
 
@@ -73,60 +76,36 @@ Status PosixError(const std::string& context, int error_number) {
 class Limiter {
  public:
   // Limit maximum number of resources to |max_acquires|.
-  Limiter(int max_acquires)
-      :
-#if !defined(NDEBUG)
-        max_acquires_(max_acquires),
-#endif  // !defined(NDEBUG)
-        acquires_allowed_(max_acquires) {
-    assert(max_acquires >= 0);
+  Limiter(int max_acquires) : acquires_allowed(max_acquires) {
+    mtx = new std::mutex();
   }
-
   Limiter(const Limiter&) = delete;
   Limiter operator=(const Limiter&) = delete;
 
   // If another resource is available, acquire it and return true.
   // Else return false.
   bool Acquire() {
-    int old_acquires_allowed =
-        acquires_allowed_.fetch_sub(1, std::memory_order_relaxed);
-
-    if (old_acquires_allowed > 0) return true;
-
-    int pre_increment_acquires_allowed =
-        acquires_allowed_.fetch_add(1, std::memory_order_relaxed);
-
-    // Silence compiler warnings about unused arguments when NDEBUG is defined.
-    (void)pre_increment_acquires_allowed;
-    // If the check below fails, Release() was called more times than acquire.
-    assert(pre_increment_acquires_allowed < max_acquires_);
-
+    mtx->lock();
+    if (acquires_allowed - 1 > 0) {
+      acquires_allowed--;
+      mtx->unlock();
+      return true;
+    }
+    mtx->unlock();
     return false;
   }
 
   // Release a resource acquired by a previous call to Acquire() that returned
   // true.
   void Release() {
-    int old_acquires_allowed =
-        acquires_allowed_.fetch_add(1, std::memory_order_relaxed);
-
-    // Silence compiler warnings about unused arguments when NDEBUG is defined.
-    (void)old_acquires_allowed;
-    // If the check below fails, Release() was called more times than acquire.
-    assert(old_acquires_allowed < max_acquires_);
+    mtx->lock();
+    acquires_allowed++;
+    mtx->unlock();
   }
 
  private:
-#if !defined(NDEBUG)
-  // Catches an excessive number of Release() calls.
-  const int max_acquires_;
-#endif  // !defined(NDEBUG)
-
-  // The number of available resources.
-  //
-  // This is a counter and is not tied to the invariants of any other class, so
-  // it can be operated on safely using std::memory_order_relaxed.
-  std::atomic<int> acquires_allowed_;
+  std::mutex* mtx;
+  int acquires_allowed;
 };
 
 // Implements sequential read access in a file using read().
@@ -224,7 +203,8 @@ class PosixRandomAccessFile final : public RandomAccessFile {
   }
 
  private:
-  const bool has_permanent_fd_;  // If false, the file is opened on every read.
+  const bool has_permanent_fd_;  // If false, the file is opened on
+                                 // every read.
   const int fd_;                 // -1 if has_permanent_fd_ is false.
   Limiter* const fd_limiter_;
   const std::string filename_;
@@ -232,18 +212,18 @@ class PosixRandomAccessFile final : public RandomAccessFile {
 
 // Implements random read access in a file using mmap().
 //
-// Instances of this class are thread-safe, as required by the RandomAccessFile
-// API. Instances are immutable and Read() only calls thread-safe library
-// functions.
+// Instances of this class are thread-safe, as required by the
+// RandomAccessFile API. Instances are immutable and Read() only calls
+// thread-safe library functions.
 class PosixMmapReadableFile final : public RandomAccessFile {
  public:
-  // mmap_base[0, length-1] points to the memory-mapped contents of the file. It
-  // must be the result of a successful call to mmap(). This instances takes
-  // over the ownership of the region.
+  // mmap_base[0, length-1] points to the memory-mapped contents of the
+  // file. It must be the result of a successful call to mmap(). This
+  // instances takes over the ownership of the region.
   //
-  // |mmap_limiter| must outlive this instance. The caller must have already
-  // acquired the right to use one mmap region, which will be released when this
-  // instance is destroyed.
+  // |mmap_limiter| must outlive this instance. The caller must have
+  // already acquired the right to use one mmap region, which will be
+  // released when this instance is destroyed.
   PosixMmapReadableFile(std::string filename, char* mmap_base, size_t length,
                         Limiter* mmap_limiter)
       : mmap_base_(mmap_base),
@@ -251,10 +231,7 @@ class PosixMmapReadableFile final : public RandomAccessFile {
         mmap_limiter_(mmap_limiter),
         filename_(std::move(filename)) {}
 
-  ~PosixMmapReadableFile() override {
-    ::munmap(static_cast<void*>(mmap_base_), length_);
-    mmap_limiter_->Release();
-  }
+  ~PosixMmapReadableFile() override {}
 
   Status Read(uint64_t offset, size_t n, Slice* result,
               char* scratch) const override {
@@ -465,14 +442,16 @@ class PosixWritableFile final : public WritableFile {
 };
 
 int LockOrUnlock(int fd, bool lock) {
+  printf("pas encore fait 6\n");
+  return 0;
   errno = 0;
   struct ::flock file_lock_info;
   std::memset(&file_lock_info, 0, sizeof(file_lock_info));
-  file_lock_info.l_type = (lock ? F_WRLCK : F_UNLCK);
-  file_lock_info.l_whence = SEEK_SET;
+  file_lock_info.l_type = (lock ? 1 : 2);
+  file_lock_info.l_whence = 0;
   file_lock_info.l_start = 0;
   file_lock_info.l_len = 0;  // Lock/unlock entire file.
-  return ::fcntl(fd, F_SETLK, &file_lock_info);
+  return fcntl(fd, 7, &file_lock_info);
 }
 
 // Instances are thread-safe because they are immutable.
@@ -492,10 +471,11 @@ class PosixFileLock : public FileLock {
 // Tracks the files locked by PosixEnv::LockFile().
 //
 // We maintain a separate set instead of relying on fcntl(F_SETLK) because
-// fcntl(F_SETLK) does not provide any protection against multiple uses from the
-// same process.
+// fcntl(F_SETLK) does not provide any protection against multiple uses
+// from the same process.
 //
-// Instances are thread-safe because all member data is guarded by a mutex.
+// Instances are thread-safe because all member data is guarded by a
+// mutex.
 class PosixLockTable {
  public:
   bool Insert(const std::string& fname) LOCKS_EXCLUDED(mu_) {
@@ -518,12 +498,7 @@ class PosixLockTable {
 class PosixEnv : public Env {
  public:
   PosixEnv();
-  ~PosixEnv() override {
-    static const char msg[] =
-        "PosixEnv singleton destroyed. Unsupported behavior!\n";
-    std::fwrite(msg, 1, sizeof(msg), stderr);
-    std::abort();
-  }
+  ~PosixEnv() override{};
 
   Status NewSequentialFile(const std::string& filename,
                            SequentialFile** result) override {
@@ -539,35 +514,39 @@ class PosixEnv : public Env {
 
   Status NewRandomAccessFile(const std::string& filename,
                              RandomAccessFile** result) override {
-    *result = nullptr;
-    int fd = ::open(filename.c_str(), O_RDONLY | kOpenBaseFlags);
-    if (fd < 0) {
-      return PosixError(filename, errno);
-    }
-
-    if (!mmap_limiter_.Acquire()) {
-      *result = new PosixRandomAccessFile(filename, fd, &fd_limiter_);
-      return Status::OK();
-    }
-
-    uint64_t file_size;
-    Status status = GetFileSize(filename, &file_size);
-    if (status.ok()) {
-      void* mmap_base =
-          ::mmap(/*addr=*/nullptr, file_size, PROT_READ, MAP_SHARED, fd, 0);
-      if (mmap_base != MAP_FAILED) {
-        *result = new PosixMmapReadableFile(filename,
-                                            reinterpret_cast<char*>(mmap_base),
-                                            file_size, &mmap_limiter_);
-      } else {
-        status = PosixError(filename, errno);
+    printf("pas encore fait 1!");
+    return Status::OK();
+    /*
+      *result = nullptr;
+      int fd = ::open(filename.c_str(), O_RDONLY | kOpenBaseFlags);
+      if (fd < 0) {
+        return PosixError(filename, errno);
       }
-    }
-    ::close(fd);
-    if (!status.ok()) {
-      mmap_limiter_.Release();
-    }
-    return status;
+
+      if (!mmap_limiter_.Acquire()) {
+        *result = new PosixRandomAccessFile(filename, fd, &fd_limiter_);
+        return Status::OK();
+      }
+
+      uint64_t file_size;
+      Status status = GetFileSize(filename, &file_size);
+      if (status.ok()) {
+        void* mmap_base =
+            ::mmap(nullptr, file_size, PROT_READ, MAP_SHARED, fd, 0);
+        if (mmap_base != MAP_FAILED) {
+          *result = new PosixMmapReadableFile(filename,
+                                              reinterpret_cast<char*>(mmap_base),
+                                              file_size, &mmap_limiter_);
+        } else {
+          status = PosixError(filename, errno);
+        }
+      }
+      ::close(fd);
+      if (!status.ok()) {
+        mmap_limiter_.Release();
+      }
+      return status;
+      */
   }
 
   Status NewWritableFile(const std::string& filename,
@@ -597,7 +576,7 @@ class PosixEnv : public Env {
   }
 
   bool FileExists(const std::string& filename) override {
-    return ::access(filename.c_str(), F_OK) == 0;
+    return access(filename.c_str(), F_OK) == 0;
   }
 
   Status GetChildren(const std::string& directory_path,
@@ -623,14 +602,14 @@ class PosixEnv : public Env {
   }
 
   Status CreateDir(const std::string& dirname) override {
-    if (::mkdir(dirname.c_str(), 0755) != 0) {
+    if (mkdir(dirname.c_str(), 0755) != 0) {
       return PosixError(dirname, errno);
     }
     return Status::OK();
   }
 
   Status RemoveDir(const std::string& dirname) override {
-    if (::rmdir(dirname.c_str()) != 0) {
+    if (rmdir(dirname.c_str()) != 0) {
       return PosixError(dirname, errno);
     }
     return Status::OK();
@@ -655,7 +634,6 @@ class PosixEnv : public Env {
 
   Status LockFile(const std::string& filename, FileLock** lock) override {
     *lock = nullptr;
-
     int fd = ::open(filename.c_str(), O_RDWR | O_CREAT | kOpenBaseFlags, 0644);
     if (fd < 0) {
       return PosixError(filename, errno);
@@ -667,6 +645,7 @@ class PosixEnv : public Env {
     }
 
     if (LockOrUnlock(fd, true) == -1) {
+      printf("...\n");
       int lock_errno = errno;
       ::close(fd);
       locks_.Remove(filename);
@@ -693,8 +672,7 @@ class PosixEnv : public Env {
 
   void StartThread(void (*thread_main)(void* thread_main_arg),
                    void* thread_main_arg) override {
-    std::thread new_thread(thread_main, thread_main_arg);
-    new_thread.detach();
+    printf("pas encore fait 2!");
   }
 
   Status GetTestDirectory(std::string* result) override {
@@ -704,13 +682,13 @@ class PosixEnv : public Env {
     } else {
       char buf[100];
       std::snprintf(buf, sizeof(buf), "/tmp/leveldbtest-%d",
-                    static_cast<int>(::geteuid()));
+                    static_cast<int>(111 /*::geteuid()*/));
       *result = buf;
     }
 
-    // The CreateDir status is ignored because the directory may already exist.
+    // The CreateDir status is ignored because the directory may already
+    // exist.
     CreateDir(*result);
-
     return Status::OK();
   }
 
@@ -734,27 +712,26 @@ class PosixEnv : public Env {
   }
 
   uint64_t NowMicros() override {
-    static constexpr uint64_t kUsecondsPerSecond = 1000000;
-    struct ::timeval tv;
-    ::gettimeofday(&tv, nullptr);
-    return static_cast<uint64_t>(tv.tv_sec) * kUsecondsPerSecond + tv.tv_usec;
+    printf("pas encore fait 1!");
+
+    return -1;
   }
 
   void SleepForMicroseconds(int micros) override {
-    std::this_thread::sleep_for(std::chrono::microseconds(micros));
+    printf("pas encore fait 1!");
   }
 
  private:
   void BackgroundThreadMain();
 
   static void BackgroundThreadEntryPoint(PosixEnv* env) {
-    env->BackgroundThreadMain();
+    printf("pas encore fait 1!");
   }
 
   // Stores the work item data in a Schedule() call.
   //
-  // Instances are constructed on the thread calling Schedule() and used on the
-  // background thread.
+  // Instances are constructed on the thread calling Schedule() and used
+  // on the background thread.
   //
   // This structure is thread-safe because it is immutable.
   struct BackgroundWorkItem {
@@ -781,27 +758,7 @@ class PosixEnv : public Env {
 int MaxMmaps() { return g_mmap_limit; }
 
 // Return the maximum number of read-only files to keep open.
-int MaxOpenFiles() {
-  if (g_open_read_only_file_limit >= 0) {
-    return g_open_read_only_file_limit;
-  }
-#ifdef __Fuchsia__
-  // Fuchsia doesn't implement getrlimit.
-  g_open_read_only_file_limit = 50;
-#else
-  struct ::rlimit rlim;
-  if (::getrlimit(RLIMIT_NOFILE, &rlim)) {
-    // getrlimit failed, fallback to hard-coded default.
-    g_open_read_only_file_limit = 50;
-  } else if (rlim.rlim_cur == RLIM_INFINITY) {
-    g_open_read_only_file_limit = std::numeric_limits<int>::max();
-  } else {
-    // Allow use of 20% of available file descriptors for read-only files.
-    g_open_read_only_file_limit = rlim.rlim_cur / 5;
-  }
-#endif
-  return g_open_read_only_file_limit;
-}
+int MaxOpenFiles() { return g_open_read_only_file_limit; }
 
 }  // namespace
 
@@ -814,42 +771,10 @@ PosixEnv::PosixEnv()
 void PosixEnv::Schedule(
     void (*background_work_function)(void* background_work_arg),
     void* background_work_arg) {
-  background_work_mutex_.Lock();
-
-  // Start the background thread, if we haven't done so already.
-  if (!started_background_thread_) {
-    started_background_thread_ = true;
-    std::thread background_thread(PosixEnv::BackgroundThreadEntryPoint, this);
-    background_thread.detach();
-  }
-
-  // If the queue is empty, the background thread may be waiting for work.
-  if (background_work_queue_.empty()) {
-    background_work_cv_.Signal();
-  }
-
-  background_work_queue_.emplace(background_work_function, background_work_arg);
-  background_work_mutex_.Unlock();
+  printf("pas encore fait 4!");
 }
 
-void PosixEnv::BackgroundThreadMain() {
-  while (true) {
-    background_work_mutex_.Lock();
-
-    // Wait until there is work to be done.
-    while (background_work_queue_.empty()) {
-      background_work_cv_.Wait();
-    }
-
-    assert(!background_work_queue_.empty());
-    auto background_work_function = background_work_queue_.front().function;
-    void* background_work_arg = background_work_queue_.front().arg;
-    background_work_queue_.pop();
-
-    background_work_mutex_.Unlock();
-    background_work_function(background_work_arg);
-  }
-}
+void PosixEnv::BackgroundThreadMain() { printf("pas encore fait 5!"); }
 
 namespace {
 

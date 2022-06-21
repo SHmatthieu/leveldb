@@ -4,14 +4,6 @@
 
 #include "db/db_impl.h"
 
-#include <algorithm>
-#include <atomic>
-#include <cstdint>
-#include <cstdio>
-#include <set>
-#include <string>
-#include <vector>
-
 #include "db/builder.h"
 #include "db/db_iter.h"
 #include "db/dbformat.h"
@@ -22,11 +14,20 @@
 #include "db/table_cache.h"
 #include "db/version_set.h"
 #include "db/write_batch_internal.h"
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <set>
+#include <string>
+#include <vector>
+
 #include "leveldb/db.h"
 #include "leveldb/env.h"
 #include "leveldb/status.h"
 #include "leveldb/table.h"
 #include "leveldb/table_builder.h"
+
 #include "port/port.h"
 #include "table/block.h"
 #include "table/merger.h"
@@ -299,15 +300,16 @@ Status DBImpl::Recover(VersionEdit* edit, bool* save_manifest) {
   assert(db_lock_ == nullptr);
   Status s = env_->LockFile(LockFileName(dbname_), &db_lock_);
   if (!s.ok()) {
+    printf("err 1\n");
     return s;
   }
-
   if (!env_->FileExists(CurrentFileName(dbname_))) {
     if (options_.create_if_missing) {
       Log(options_.info_log, "Creating DB %s since it was missing.",
           dbname_.c_str());
       s = NewDB();
       if (!s.ok()) {
+        printf("err 2\n");
         return s;
       }
     } else {
@@ -320,9 +322,10 @@ Status DBImpl::Recover(VersionEdit* edit, bool* save_manifest) {
                                      "exists (error_if_exists is true)");
     }
   }
-
   s = versions_->Recover(save_manifest);
+
   if (!s.ok()) {
+    printf("err 3\n");
     return s;
   }
   SequenceNumber max_sequence(0);
@@ -339,6 +342,8 @@ Status DBImpl::Recover(VersionEdit* edit, bool* save_manifest) {
   std::vector<std::string> filenames;
   s = env_->GetChildren(dbname_, &filenames);
   if (!s.ok()) {
+    printf("err 4\n");
+
     return s;
   }
   std::set<uint64_t> expected;
@@ -366,6 +371,7 @@ Status DBImpl::Recover(VersionEdit* edit, bool* save_manifest) {
     s = RecoverLogFile(logs[i], (i == logs.size() - 1), save_manifest, edit,
                        &max_sequence);
     if (!s.ok()) {
+      printf("err 5\n");
       return s;
     }
 
@@ -1482,13 +1488,14 @@ DB::~DB() = default;
 
 Status DB::Open(const Options& options, const std::string& dbname, DB** dbptr) {
   *dbptr = nullptr;
-
   DBImpl* impl = new DBImpl(options, dbname);
   impl->mutex_.Lock();
   VersionEdit edit;
   // Recover handles create_if_missing, error_if_exists
   bool save_manifest = false;
+
   Status s = impl->Recover(&edit, &save_manifest);
+  printf("%s\n", s.ToString().c_str());
   if (s.ok() && impl->mem_ == nullptr) {
     // Create new log and a corresponding memtable.
     uint64_t new_log_number = impl->versions_->NewFileNumber();
