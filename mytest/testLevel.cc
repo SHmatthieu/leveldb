@@ -14,9 +14,16 @@ int main() {
 
   string key1 = "name";
   string value1 = "matthieu";
+  string key2 = "age";
+  string value3 = "21";
   string value2;
 
   status = db->Put(leveldb::WriteOptions(), key1, value1);
-  printf("val : %s", status.ToString().c_str());
+  printf("val : %s\n", status.ToString().c_str());
+  status = db->Get(leveldb::ReadOptions(), key1, &value2);
+  printf("val : %s\n", status.ToString().c_str());
+  printf("val : %s\n", value2.c_str());
+  cout << "test" << endl;
+
   return 0;
 }

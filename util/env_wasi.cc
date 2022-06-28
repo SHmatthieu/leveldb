@@ -77,7 +77,7 @@ class Limiter {
  public:
   // Limit maximum number of resources to |max_acquires|.
   Limiter(int max_acquires) : acquires_allowed(max_acquires) {
-    mtx = new std::mutex();
+    mtx = new port::Mutex();
   }
   Limiter(const Limiter&) = delete;
   Limiter operator=(const Limiter&) = delete;
@@ -85,26 +85,26 @@ class Limiter {
   // If another resource is available, acquire it and return true.
   // Else return false.
   bool Acquire() {
-    mtx->lock();
+    mtx->Lock();
     if (acquires_allowed - 1 > 0) {
       acquires_allowed--;
-      mtx->unlock();
+      mtx->Unlock();
       return true;
     }
-    mtx->unlock();
+    mtx->Unlock();
     return false;
   }
 
   // Release a resource acquired by a previous call to Acquire() that returned
   // true.
   void Release() {
-    mtx->lock();
+    mtx->Lock();
     acquires_allowed++;
-    mtx->unlock();
+    mtx->Unlock();
   }
 
  private:
-  std::mutex* mtx;
+  port::Mutex* mtx;
   int acquires_allowed;
 };
 
@@ -451,14 +451,16 @@ int LockOrUnlock(int fd, bool lock) {
   file_lock_info.l_whence = 0;
   file_lock_info.l_start = 0;
   file_lock_info.l_len = 0;  // Lock/unlock entire file.
-  return fcntl(fd, 7, &file_lock_info);
+  return fcntl(fd, 6, &file_lock_info);
 }
 
 // Instances are thread-safe because they are immutable.
 class PosixFileLock : public FileLock {
  public:
   PosixFileLock(int fd, std::string filename)
-      : fd_(fd), filename_(std::move(filename)) {}
+      : fd_(fd), filename_(std::move(filename)) {
+    printf("ahahha\n");
+  }
 
   int fd() const { return fd_; }
   const std::string& filename() const { return filename_; }
@@ -636,14 +638,15 @@ class PosixEnv : public Env {
     *lock = nullptr;
     int fd = ::open(filename.c_str(), O_RDWR | O_CREAT | kOpenBaseFlags, 0644);
     if (fd < 0) {
+      printf("aa\n");
       return PosixError(filename, errno);
     }
 
     if (!locks_.Insert(filename)) {
+      printf("bb\n");
       ::close(fd);
       return Status::IOError("lock " + filename, "already held by process");
     }
-
     if (LockOrUnlock(fd, true) == -1) {
       printf("...\n");
       int lock_errno = errno;

@@ -4,6 +4,7 @@
 
 set(CMAKE_C_FLAGS_INIT "-Wl,--allow-undefined,--no-check-features,--export=__heap_base,--export=__data_end -v")
 
+set(WAMR_BUILD_LIBC_BUILTIN 1)
 add_link_options("-Wl,--allow-undefined,--no-check-features")
 cmake_minimum_required(VERSION 3.9)
 
