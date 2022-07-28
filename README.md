@@ -1,236 +1,135 @@
-**LevelDB is a fast key-value storage library written at Google that provides an ordered mapping from string keys to string values.**
+# levelDB en WebAssembly
 
-[![ci](https://github.com/google/leveldb/actions/workflows/build.yml/badge.svg)](https://github.com/google/leveldb/actions/workflows/build.yml)
+# Guide d'installation
 
-Authors: Sanjay Ghemawat (sanjay@google.com) and Jeff Dean (jeff@google.com)
+Ce guide reviens sur les differentes étapes pour compiler et éxecuter levelDB en WebAssembly pour wasm-micro-runtime.
+Il est important de noter qu'il n'est pas obligatoire de mettre en place le compilateur (ce qui peu etre un peu long) pour tester les exemples (/exemple_wasm), il suffit d'installer le runtime (wasm-micro-runtime) ce qui est plutot rapide.
 
-# Features
+## installation du runtime (wamr)
 
-  * Keys and values are arbitrary byte arrays.
-  * Data is stored sorted by key.
-  * Callers can provide a custom comparison function to override the sort order.
-  * The basic operations are `Put(key,value)`, `Get(key)`, `Delete(key)`.
-  * Multiple changes can be made in one atomic batch.
-  * Users can create a transient snapshot to get a consistent view of data.
-  * Forward and backward iteration is supported over the data.
-  * Data is automatically compressed using the [Snappy compression library](https://google.github.io/snappy/).
-  * External activity (file system operations etc.) is relayed through a virtual interface so users can customize the operating system interactions.
+le github de wamr propose un guide d'installation complet en fonction de la platforme.
+Attention il faut obligatoirement activer le support de pthread ce qui n'est pas par défault (-DWAMR_BUILD_LIB_PTHREAD=1 en paramètre cmake).
+https://github.com/bytecodealliance/wasm-micro-runtime/blob/main/doc/build_wamr.md#linux
 
-# Documentation
+### jit
 
-  [LevelDB library documentation](https://github.com/google/leveldb/blob/main/doc/index.md) is online and bundled with the source code.
+Pour tester en mode jit il faut recompiler wamr mais il faut aussi compiler llvm ce qui est assez long (ne pas oublier pthread) mais tout est détaillé sur leur github.
 
-# Limitations
+### aot
 
-  * This is not a SQL database.  It does not have a relational data model, it does not support SQL queries, and it has no support for indexes.
-  * Only a single process (possibly multi-threaded) can access a particular database at a time.
-  * There is no client-server support builtin to the library.  An application that needs such support will have to wrap their own server around the library.
+Pour utiliser le mode aot il n'y a pas besoin de recompiler le runtime mais il faut compiler wamrc pour convertir un fichier wasm en fichier aot.
+https://github.com/bytecodealliance/wasm-micro-runtime/blob/main/README.md#build-wamrc-aot-compiler
 
-# Getting the Source
-
-```bash
-git clone --recurse-submodules https://github.com/google/leveldb.git
+```
+wamrc -o <AOT file> <WASM file>
+iwasm <AOT file>
 ```
 
-# Building
+### exemple
 
-This project supports [CMake](https://cmake.org/) out of the box.
+commande utilisé pour installer wamr sur ma machine (ubuntu 20.04)
+(similaire au guilde d'installation wamr sur linux):
 
-### Build for POSIX
-
-Quick start:
-
-```bash
-mkdir -p build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release .. && cmake --build .
+```
+git clone https://github.com/bytecodealliance/wasm-micro-runtime.git
+sudo apt install build-essential cmake g++-multilib libgcc-8-dev lib32gcc-8-dev
+cd wasm-micro-runtime/product-mini/platforms/linux/
+mkdir build && cd build
+cmake -DWAMR_BUILD_LIB_PTHREAD=1 ..
+make
 ```
 
-### Building for Windows
+si ca a marché alors il y a maintenant un executable iwasm qui correspond au runtime.
 
-First generate the Visual Studio 2017 project/solution files:
+### utiliser iwasm
 
-```cmd
-mkdir build
-cd build
-cmake -G "Visual Studio 15" ..
+Maintenant que iwasm est installé on peu executer les fichiers bytecode WebAssembly (different exemple dans /exemple_wasm)
+
 ```
-The default default will build for x86. For 64-bit run:
-
-```cmd
-cmake -G "Visual Studio 15 Win64" ..
+./iwasm exemple.out
 ```
 
-To compile the Windows solution from the command-line:
+pour pouvoir utiliser levelDB en wasm il est important de donner l'accès au dossier dans lequel le programme ecrira la base de donnée.
 
-```cmd
-devenv /build Debug leveldb.sln
+```
+./iwasm --dir=. a.out
 ```
 
-or open leveldb.sln in Visual Studio and build from within.
+### tips
 
-Please see the CMake documentation and `CMakeLists.txt` for more advanced usage.
+J'ai ajouté un alias iwasm vers l'endroit ou j'ai installé iwasm dans mon fichier .bashrc (.zshrc dans mon cas) pour pouvoir utiliser facilement iwasm.
 
-# Contributing to the leveldb Project
+```
+alias iwasm="/install-path/wasm-micro-runtime/product-mini/platforms/linux/build/iwasm"
 
-The leveldb project welcomes contributions. leveldb's primary goal is to be
-a reliable and fast key/value store. Changes that are in line with the
-features/limitations outlined above, and meet the requirements below,
-will be considered.
+```
 
-Contribution requirements:
+## Compilateur
 
-1. **Tested platforms only**. We _generally_ will only accept changes for
-   platforms that are compiled and tested. This means POSIX (for Linux and
-   macOS) or Windows. Very small changes will sometimes be accepted, but
-   consider that more of an exception than the rule.
+Pour pouvoir compiler levelDB vers WebAssemlby il faut installer wasi-sdk et y apporter quelques modification. (il n'est pas nécessaire d'avoir le compilateur pour tester levelDB en wasm, le projet est déjà compilé dans /exemple_wasm)
 
-2. **Stable API**. We strive very hard to maintain a stable API. Changes that
-   require changes for projects using leveldb _might_ be rejected without
-   sufficient benefit to the project.
+### set up le compilateur
 
-3. **Tests**: All changes must be accompanied by a new (or changed) test, or
-   a sufficient explanation as to why a new (or changed) test is not required.
+[wasi sdk
+](https://github.com/WebAssembly/wasi-sdk)
+des versions déjà compilé de wasi sdk sont présent sur leur github (j'ai utilisé la version 15).
+sinon il est possible de compiler directement avec cmake
 
-4. **Consistent Style**: This project conforms to the
-   [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html).
-   To ensure your changes are properly formatted please run:
+j'ai ajouter un variable WASI_SDK_PATH pour pouvoir l'utilser plus facilement
 
-   ```
-   clang-format -i --style=file <file>
-   ```
+```
+export WASI_SDK_PATH="/path/wasi-sdk-15.0"
+```
 
-We are unlikely to accept contributions to the build configuration files, such
-as `CMakeLists.txt`. We are focused on maintaining a build configuration that
-allows us to test that the project works in a few supported configurations
-inside Google. We are not currently interested in supporting other requirements,
-such as different operating systems, compilers, or build systems.
+https://github.com/bytecodealliance/wasm-micro-runtime/blob/main/doc/pthread_library.md
 
-## Submitting a Pull Request
+Pour pouvoir utiliser pthread avec wasi_sdk il faut ajouter pthread.h au sysroot
 
-Before any pull request will be accepted the author must first sign a
-Contributor License Agreement (CLA) at https://cla.developers.google.com/.
+```
+cp ${WAMR_ROOT}/wamr-sdk/app/libc-builtin-sysroot/include/pthread.h /opt/wasi-sdk/share/wasi-sysroot/include
+```
 
-In order to keep the commit timeline linear
-[squash](https://git-scm.com/book/en/v2/Git-Tools-Rewriting-History#Squashing-Commits)
-your changes down to a single commit and [rebase](https://git-scm.com/docs/git-rebase)
-on google/leveldb/main. This keeps the commit timeline linear and more easily sync'ed
-with the internal repository at Google. More information at GitHub's
-[About Git rebase](https://help.github.com/articles/about-git-rebase/) page.
+### compiler levelDB
 
-# Performance
+levelDB ce compile via cmake cependant il faut quand même passer quelque arguments à cmake avant de lancer.
 
-Here is a performance report (with explanations) from the run of the
-included db_bench program.  The results are somewhat noisy, but should
-be enough to get a ballpark performance estimate.
+-   WASI_SDK_PREFIX=path vers wasi sdk
+-   MAKE_TOOLCHAIN_FILE=path vers le fichier de configuration cmake pour wasi-sdk
+-   CMAKE_SYSROOT=path vers le sysroot de wasi-sdk
+-   CMAKE_BUILD_TYPE=Release
 
-## Setup
+```
+rm -fr build && mkdir build && cd build
+cmake -DWASI_SDK_PREFIX=$WASI_SDK_PATH -DCMAKE_TOOLCHAIN_FILE=$WASI_SDK_PATH/share/cmake/wasi-sdk.cmake -DCMAKE_SYSROOT=$WASI_SDK_PATH/share/wasi-sysroot -DCMAKE_BUILD_TYPE=Release ..
+cmake --build .
+cd ..
+```
 
-We use a database with a million entries.  Each entry has a 16 byte
-key, and a 100 byte value.  Values used by the benchmark compress to
-about half their original size.
+un scipt bash (compile.sh) pour compiler le projet est présent à la racine du projet (il faut la varaible $WASI_SDK_PATH).
 
-    LevelDB:    version 1.1
-    Date:       Sun May  1 12:11:26 2011
-    CPU:        4 x Intel(R) Core(TM)2 Quad CPU    Q6600  @ 2.40GHz
-    CPUCache:   4096 KB
-    Keys:       16 bytes each
-    Values:     100 bytes each (50 bytes after compression)
-    Entries:    1000000
-    Raw Size:   110.6 MB (estimated)
-    File Size:  62.9 MB (estimated)
+### compiler les exemples
 
-## Write performance
+differents code source d'exemple et de benchark sont présent dans le dossier /mytest. Compiler un exemple qui utilise levelDB peut etre un petit peu complexe (car il y a beaucoup de flag nécessaire) heureusment un makefile est présent.
 
-The "fill" benchmarks create a brand new database, in either
-sequential, or random order.  The "fillsync" benchmark flushes data
-from the operating system to the disk after every operation; the other
-write operations leave the data sitting in the operating system buffer
-cache for a while.  The "overwrite" benchmark does random writes that
-update existing keys in the database.
+```
+make       #exemple simple
+make write #exempe d'ecriture
+make read  #exemple de lecture
+make bench #benchmarks
 
-    fillseq      :       1.765 micros/op;   62.7 MB/s
-    fillsync     :     268.409 micros/op;    0.4 MB/s (10000 ops)
-    fillrandom   :       2.460 micros/op;   45.0 MB/s
-    overwrite    :       2.380 micros/op;   46.5 MB/s
+iwasm --dir=. a.out #pour lancer l'exemple qui vient d'etre compilé
+```
 
-Each "op" above corresponds to a write of a single key/value pair.
-I.e., a random write benchmark goes at approximately 400,000 writes per second.
+### compiler un nouveau programme qui utilise levelDB
 
-Each "fillsync" operation costs much less (0.3 millisecond)
-than a disk seek (typically 10 milliseconds).  We suspect that this is
-because the hard disk itself is buffering the update in its memory and
-responding before the data has been written to the platter.  This may
-or may not be safe based on whether or not the hard disk has enough
-power to save its memory in the event of a power failure.
+le meilleur moyen pour utiliser levelDB en WebAssembly dans un nouveau programme est de regarder comment sont compiler les exemples dans le makefile dans /mytest. (il faut au préalable avoir compilé levelDB)
 
-## Read performance
+## Arborescence du projet
 
-We list the performance of reading sequentially in both the forward
-and reverse direction, and also the performance of a random lookup.
-Note that the database created by the benchmark is quite small.
-Therefore the report characterizes the performance of leveldb when the
-working set fits in memory.  The cost of reading a piece of data that
-is not present in the operating system buffer cache will be dominated
-by the one or two disk seeks needed to fetch the data from disk.
-Write performance will be mostly unaffected by whether or not the
-working set fits in memory.
+le projet est un fork de levelDB la structure est donc similaire.
 
-    readrandom  : 16.677 micros/op;  (approximately 60,000 reads per second)
-    readseq     :  0.476 micros/op;  232.3 MB/s
-    readreverse :  0.724 micros/op;  152.9 MB/s
-
-LevelDB compacts its underlying storage data in the background to
-improve read performance.  The results listed above were done
-immediately after a lot of random writes.  The results after
-compactions (which are usually triggered automatically) are better.
-
-    readrandom  : 11.602 micros/op;  (approximately 85,000 reads per second)
-    readseq     :  0.423 micros/op;  261.8 MB/s
-    readreverse :  0.663 micros/op;  166.9 MB/s
-
-Some of the high cost of reads comes from repeated decompression of blocks
-read from disk.  If we supply enough cache to the leveldb so it can hold the
-uncompressed blocks in memory, the read performance improves again:
-
-    readrandom  : 9.775 micros/op;  (approximately 100,000 reads per second before compaction)
-    readrandom  : 5.215 micros/op;  (approximately 190,000 reads per second after compaction)
-
-## Repository contents
-
-See [doc/index.md](doc/index.md) for more explanation. See
-[doc/impl.md](doc/impl.md) for a brief overview of the implementation.
-
-The public interface is in include/leveldb/*.h.  Callers should not include or
-rely on the details of any other header files in this package.  Those
-internal APIs may be changed without warning.
-
-Guide to header files:
-
-* **include/leveldb/db.h**: Main interface to the DB: Start here.
-
-* **include/leveldb/options.h**: Control over the behavior of an entire database,
-and also control over the behavior of individual reads and writes.
-
-* **include/leveldb/comparator.h**: Abstraction for user-specified comparison function.
-If you want just bytewise comparison of keys, you can use the default
-comparator, but clients can write their own comparator implementations if they
-want custom ordering (e.g. to handle different character encodings, etc.).
-
-* **include/leveldb/iterator.h**: Interface for iterating over data. You can get
-an iterator from a DB object.
-
-* **include/leveldb/write_batch.h**: Interface for atomically applying multiple
-updates to a database.
-
-* **include/leveldb/slice.h**: A simple module for maintaining a pointer and a
-length into some other byte array.
-
-* **include/leveldb/status.h**: Status is returned from many of the public interfaces
-and is used to report success and various kinds of errors.
-
-* **include/leveldb/env.h**:
-Abstraction of the OS environment.  A posix implementation of this interface is
-in util/env_posix.cc.
-
-* **include/leveldb/table.h, include/leveldb/table_builder.h**: Lower-level modules that most
-clients probably won't use directly.
+-   /util tout les fichers contenant le wasi dans le nom on été rajouté
+-   /port port_wasi.h à été rajoué et port.h modifé
+-   /exemple_wasm contient des exemples déjà compilé
+-   /mytest contient le code source des exemple et un makefile pour les compiler
+-   le script compile.sh permet de compiler facilement le projet sous linux dans le dossier build.

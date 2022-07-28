@@ -18,14 +18,14 @@
 
 namespace leveldb {
 
-class PosixLogger final : public Logger {
+class WasiLogger final : public Logger {
  public:
   // Creates a logger that writes to the given file.
   //
-  // The PosixLogger instance takes ownership of the file handle.
-  explicit PosixLogger(std::FILE* fp) : fp_(fp) { assert(fp != nullptr); }
+  // The WasiLogger instance takes ownership of the file handle.
+  explicit WasiLogger(std::FILE* fp) : fp_(fp) { assert(fp != nullptr); }
 
-  ~PosixLogger() override { std::fclose(fp_); }
+  ~WasiLogger() override { std::fclose(fp_); }
 
   void Logv(const char* format, std::va_list arguments) override {
     // Record the time as close to the Logv() call as possible.
