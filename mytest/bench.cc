@@ -1,13 +1,34 @@
 #include <chrono>
 #include <iostream>
 #include <sstream>
+#include <stdlib.h>
 #include <string>
 
 #include "leveldb/db.h"
 
-static int ITER = 10000;
+static int ITER = 1000;
+static int NBYTES_DATA = 100;
+static bool SYNC = true;
 
 using namespace std;
+
+class GenData {
+ public:
+  // size in byte
+  static string Create(int size) {
+    const char ALLOWED[] = "abcdefghijklmnopqrstuvwxyz1234567890";
+    char* data = (char*)malloc(size);
+    int nbAllowed = sizeof(ALLOWED) - 1;
+    int c;
+    for (int i = 0; i < size - 1; i++) {
+      c = rand() % nbAllowed;
+      data[i] = ALLOWED[c];
+    }
+    data[size - 1] = '\0';
+    std::string data_string = data;
+    return data_string;
+  }
+};
 
 class Bench {
  private:
@@ -31,10 +52,9 @@ class Bench {
       char key[100];
       std::snprintf(key, sizeof(key), "%016d", i);
       std::string cpp_key = key;
-
       leveldb::WriteOptions write_options;
-      write_options.sync = true;
-      db->Put(write_options, cpp_key, "value");
+      write_options.sync = SYNC;
+      db->Put(write_options, cpp_key, GenData::Create(NBYTES_DATA));
 
       FinishedSingleOp();
     }
@@ -72,6 +92,7 @@ class Bench {
   void PrintResult() {
     buffer << mode << " took : " << total << " ms. ";
     buffer << "to do " << iter << " iterations." << endl;
+    buffer << (iter * NBYTES_DATA / 100000) * (1000 / total) << " MB/s" << endl;
   }
 
   void GetResult() { cout << buffer.str(); }
@@ -79,7 +100,7 @@ class Bench {
 
 int main(void) {
   cout << "benchmarks leveldb !" << endl;
-
+  srand(time(NULL));
   Bench bench(ITER);
   bench.Write();
   bench.Read();
@@ -87,3 +108,4 @@ int main(void) {
 
   return 0;
 }
+
